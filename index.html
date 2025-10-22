@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Space Kite: Energy Rush</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      touch-action: none;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: url("k.png") center/cover no-repeat;
+    }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: none;             /* grid when visible */
+      place-items: center;
+      background: rgba(0,0,0,.45);
+      color: #fff;
+      text-align: center;
+    }
+    #overlay .card {
+      background: rgba(0,0,0,.55);
+      padding: 16px 22px;
+      border-radius: 12px;
+      min-width: 300px;
+    }
+    #overlay h1 { margin: 0 0 8px 0; font-size: 42px; }
+    #overlay .score { font-size: 20px; margin: 6px 0 10px; font-weight: 700; }
+    #overlay .hint  { font-size: 16px; opacity: .9; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="overlay">
+    <div class="card">
+      <h1 id="overlayTitle">Game Over</h1>
+      <div class="score" id="finalScore">Score: 0 — Best: 0</div>
+      <div class="hint" id="overlayHint">Tap / Click / Press Space to restart</div>
+    </div>
+  </div>
+
+  <script>
+    // ===== Canvas / HiDPI =====
+    const cvs = document.getElementById("game");
+    const ctx = cvs.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const overlayTitle = document.getElementById("overlayTitle");
+    const overlayHint = document.getElementById("overlayHint");
+    const finalScoreEl = document.getElementById("finalScore");
+    const world = { w: 0, h: 0 };
+
+    function resize() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      cvs.width  = Math.floor(window.innerWidth  * dpr);
+      cvs.height = Math.floor(window.innerHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+      world.w = window.innerWidth;
+      world.h = window.innerHeight;
+
+      player.w = Math.floor(world.w * 0.09);
+      player.h = player.w;
+      player.x = Math.floor(world.w * 0.12);
+      player.y = Math.floor(world.h * 0.5 - player.h / 2);
+      speeds.player = Math.max(4, Math.floor(world.w * 0.009));
+    }
+    window.addEventListener("resize", resize);
+
+    // ===== Gameplay Settings =====
+    const TARGET_BONUSES = 20;        // win after collecting 20 bonuses
+    const PLAYER_RADIUS_RATIO = 0.33; // collision circle size (player)
+    const SPHERE_RADIUS_RATIO = 0.42; // collision circle size (enemy)
+
+    const speeds  = { player: 8, spawnMS: 800, bonusMS: 3200, minSpawnMS: 400 };
+    let difficultyBoost = 0;
+
+    // ===== Images =====
+    const playerImg = new Image(); playerImg.src = "p.png";
+    let playerReady = false; playerImg.onload = () => playerReady = true;
+
+    const sphereSrcs = ["t.png", "s.png", "h.png", "u.png"];
+    const sphereImgs = sphereSrcs.map(src => {
+      const im = new Image(); im.src = src; im.ready = false;
+      im.onload = () => im.ready = true;
+      return im;
+    });
+
+    const bonusImg = new Image(); bonusImg.src = "r.png";
+    let bonusReady = false; bonusImg.onload = () => bonusReady = true;
+
+    // ===== Entities =====
+    const player = { x: 0, y: 0, w: 80, h: 80 };
+    const spheres = [];   // enemies
+    const bonuses = [];   // pickups
+    const explosions = [];
+
+    // Win FX state
+    let win = false;
+    let winFXActive = false;
+    let winFXStart = 0;
+    const WIN_FX_DURATION = 2200;
+    const winRays = [];
+
+    // Persistent state
+    let running = true;
+    let score = 0;
+    let best = Number(localStorage.getItem("spacekite.best") || 0);
+    let collectedBonuses = 0;
+    let lastSpawn = 0;
+    let lastBonusSpawn = 0;
+    let lastTime = 0;
+
+    // ===== Utils =====
+    const rand = (a,b) => Math.random()*(b-a)+a;
+    const clamp = (v,a,b) => v<a?a:v>b?b:v;
+    const aabb = (A,B) => A.x<B.x+B.w && A.x+A.w>B.x && A.y<B.y+B.h && A.y+A.h>B.y;
+
+    // circle helpers
+    function dist2(x1,y1,x2,y2){ const dx=x1-x2, dy=y1-y2; return dx*dx + dy*dy; }
+    function circlesCollide(x1,y1,r1, x2,y2,r2){ return dist2(x1,y1,x2,y2) <= (r1+r2)*(r1+r2); }
+
+    function playerCircle() {
+      const cx = player.x + player.w/2;
+      const cy = player.y + player.h/2;
+      const r  = Math.min(player.w, player.h) * PLAYER_RADIUS_RATIO;
+      return { cx, cy, r };
+    }
+    function sphereCircle(s) {
+      const cx = s.x + s.w/2;
+      const cy = s.y + s.h/2;
+      const r  = Math.min(s.w, s.h) * SPHERE_RADIUS_RATIO;
+      return { cx, cy, r };
+    }
+
+    // ===== Spawns =====
+    function spawnSphere() {
+      if (spheres.length > 6) return; // keep fewer on screen
+      const size = rand(world.w*0.05, world.w*0.09);
+      const x = rand(0, world.w - size);
+      const y = -size - 20;
+      // slightly faster than earlier version
+      const vy = rand(8, 14) + difficultyBoost;
+      const vx = rand(-2.5, 2.5);
+      const img = sphereImgs[(Math.random()*sphereImgs.length)|0];
+      spheres.push({x,y,w:size,h:size,vx,vy,angle:rand(0,Math.PI*2),spin:rand(-0.1,0.1),img});
+    }
+
+    function spawnBonus() {
+      const size = Math.max(36, Math.floor(world.w * 0.06));
+      const x = rand(0, world.w - size);
+      const y = -size - 20;
+      const vy = rand(3, 4.5);
+      bonuses.push({x,y,w:size,h:size,vy,angle:rand(0,Math.PI*2),spin:rand(-0.05,0.05)});
+    }
+
+    // ===== Input =====
+    const keys = new Set();
+    window.addEventListener("keydown", e => {
+      if ((e.code === "Space" || e.code === "Enter") && !running && !winFXActive) return reset();
+      keys.add(e.code);
+    });
+    window.addEventListener("keyup", e => keys.delete(e.code));
+
+    let dragging = false;
+    cvs.addEventListener("pointerdown", e => { if(!running && !winFXActive) return reset(); dragging=true; moveTo(e); });
+    cvs.addEventListener("pointermove", e => { if(dragging) moveTo(e); });
+    cvs.addEventListener("pointerup", ()=>dragging=false);
+    cvs.addEventListener("pointercancel",()=>dragging=false);
+
+    function moveTo(e){
+      const r=cvs.getBoundingClientRect();
+      const x=e.clientX-r.left;
+      const y=e.clientY-r.top;
+      player.x=clamp(x-player.w/2,0,world.w-player.w);
+      player.y=clamp(y-player.h/2,0,world.h-player.h);
+    }
+
+    // ===== Explosions =====
+    function explode(x,y,color="hsl(200,100%,70%)") {
+      for(let i=0;i<25;i++){
+        explosions.push({x,y,vx:rand(-4,4),vy:rand(-4,4),r:rand(2,6),life:rand(25,60),color});
+      }
+    }
+    function updateExplosions(){
+      for(let i=explosions.length-1;i>=0;i--){
+        const p=explosions[i];
+        p.x+=p.vx; p.y+=p.vy; p.life--;
+        if(p.life<=0) explosions.splice(i,1);
+      }
+    }
+    function drawExplosions(){
+      for(const p of explosions){
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      }
+    }
+
+    // ===== Win FX =====
+    function startWinFX() {
+      winFXActive = true;
+      winFXStart = performance.now();
+
+      // pop existing spheres
+      for (const s of spheres) explode(s.x + s.w/2, s.y + s.h/2, "hsl(190,100%,65%)");
+      spheres.length = 0;
+
+      // starburst rays from player
+      winRays.length = 0;
+      const cx = player.x + player.w/2;
+      const cy = player.y + player.h/2;
+      const num = 28;
+      for (let i=0;i<num;i++){
+        const ang = (i/num) * Math.PI*2;
+        winRays.push({
+          x: cx, y: cy,
+          angle: ang,
+          len: 0,
+          maxLen: Math.hypot(world.w, world.h),
+          speed: rand(1.2, 1.8) * (world.w * 0.01),
+          width: rand(3,6)
+        });
+      }
+    }
+
+    function drawWinFX(now) {
+      const t = now - winFXStart;
+      const cx = player.x + player.w/2;
+      const cy = player.y + player.h/2;
+
+      // portal ring
+      const prog = Math.min(1, t / WIN_FX_DURATION);
+      const R = player.w * (1 + prog * 18);
+      const g = ctx.createRadialGradient(cx, cy, R*0.1, cx, cy, R);
+      g.addColorStop(0, "rgba(0,255,255,0.8)");
+      g.addColorStop(0.35, "rgba(0,180,255,0.35)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI*2); ctx.fill();
+
+      // rays
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = "rgba(0,255,255,0.8)";
+      for (const r of winRays) {
+        r.len = Math.min(r.maxLen, r.len + r.speed);
+        ctx.lineWidth = r.width;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(r.angle)*r.len, cy + Math.sin(r.angle)*r.len);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // ===== Update =====
+    function update(dt,t){
+      if(!running) { if (winFXActive) updateExplosions(); return; }
+
+      // player movement
+      const step=speeds.player;
+      if(keys.has("ArrowLeft")||keys.has("KeyA")) player.x-=step;
+      if(keys.has("ArrowRight")||keys.has("KeyD")) player.x+=step;
+      if(keys.has("ArrowUp")||keys.has("KeyW")) player.y-=step;
+      if(keys.has("ArrowDown")||keys.has("KeyS")) player.y+=step;
+      player.x=clamp(player.x,0,world.w-player.w);
+      player.y=clamp(player.y,0,world.h-player.h);
+
+      // spawns
+      if(t-lastSpawn>speeds.spawnMS){
+        lastSpawn=t;
+        spawnSphere();
+        difficultyBoost=Math.min(10,difficultyBoost+0.1);
+        speeds.spawnMS=Math.max(speeds.minSpawnMS,speeds.spawnMS-2);
+      }
+      if(t-lastBonusSpawn>speeds.bonusMS){
+        lastBonusSpawn=t;
+        if(Math.random()<0.5) spawnBonus();
+        speeds.bonusMS=Math.max(1800,speeds.bonusMS-40);
+      }
+
+      // move entities
+      for(const s of spheres){s.x+=s.vx; s.y+=s.vy; s.angle+=s.spin;}
+      for(const b of bonuses){b.y+=b.vy; b.angle+=b.spin;}
+
+      // cleanup off-screen
+      for(let i=spheres.length-1;i>=0;i--) if(spheres[i].y>world.h+60) spheres.splice(i,1);
+      for(let i=bonuses.length-1;i>=0;i--) if(bonuses[i].y>world.h+60) bonuses.splice(i,1);
+
+      // --- LOSS: precise circle–circle collision ---
+      if (!win) {
+        const pc = playerCircle();
+        for(const s of spheres){
+          const sc = sphereCircle(s);
+          if (circlesCollide(pc.cx, pc.cy, pc.r, sc.cx, sc.cy, sc.r)) {
+            running=false; win=false;
+            best=Math.max(best,score);
+            localStorage.setItem("spacekite.best",String(best));
+            showOverlay("lose");
+            return;
+          }
+        }
+      }
+
+      // collect bonus: +100, clear all spheres, progress++
+      for(let i=bonuses.length-1;i>=0;i--){
+        const b=bonuses[i];
+        if(aabb({x:player.x,y:player.y,w:player.w,h:player.h}, b)){
+          score+=100;
+          collectedBonuses += 1;
+          bonuses.splice(i,1);
+          explode(player.x+player.w/2,player.y+player.h/2,"hsl(60,100%,70%)");
+          for(const s of spheres) explode(s.x+s.w/2,s.y+s.h/2,"hsl(0,100%,60%)");
+          spheres.length=0;
+        }
+      }
+
+      // win condition
+      if (collectedBonuses >= TARGET_BONUSES && !win) {
+        win = true;
+        running = false;
+        best = Math.max(best, score);
+        localStorage.setItem("spacekite.best", String(best));
+        startWinFX();
+        return;
+      }
+
+      updateExplosions();
+      score+=Math.max(1,Math.floor(dt/16));
+    }
+
+    // ===== Draw =====
+    function draw(now){
+      ctx.clearRect(0,0,world.w,world.h);
+
+      // enemies
+      for(const s of spheres){
+        const w=s.w,h=s.h;
+        ctx.save();
+        ctx.translate(s.x+s.w/2,s.y+s.h/2);
+        ctx.rotate(s.angle);
+        if(s.img && s.img.ready) ctx.drawImage(s.img,-w/2,-h/2,w,h);
+        else {ctx.fillStyle="rgba(0,200,255,0.4)"; ctx.beginPath(); ctx.arc(0,0,Math.min(w,h)/2,0,Math.PI*2); ctx.fill();}
+        ctx.restore();
+      }
+
+      // bonuses
+      for(const b of bonuses){
+        const w=b.w,h=b.h;
+        ctx.save(); ctx.translate(b.x+b.w/2,b.y+b.h/2); ctx.rotate(b.angle);
+        if(bonusReady) ctx.drawImage(bonusImg,-w/2,-h/2,w,h);
+        else {ctx.fillStyle="gold"; ctx.beginPath(); ctx.arc(0,0,Math.min(w,h)/2,0,Math.PI*2); ctx.fill();}
+        ctx.restore();
+      }
+
+      // player glow
+      const cx=player.x+player.w/2, cy=player.y+player.h/2;
+      const glow=ctx.createRadialGradient(cx,cy,player.w*0.25,cx,cy,player.w*1.0);
+      glow.addColorStop(0,"rgba(0,255,255,0.45)");
+      glow.addColorStop(1,"rgba(0,0,0,0)");
+      ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(cx,cy,player.w,0,Math.PI*2); ctx.fill();
+
+      // player sprite
+      if(playerReady) ctx.drawImage(playerImg,player.x,player.y,player.w,player.h);
+      else { ctx.fillStyle="rgba(255,0,128,0.6)"; ctx.fillRect(player.x,player.y,player.w,player.h); }
+
+      // explosions
+      drawExplosions();
+
+      // win FX
+      if (winFXActive) {
+        drawWinFX(now);
+        if (now - winFXStart >= WIN_FX_DURATION) {
+          winFXActive = false;
+          showOverlay("win");
+        }
+      }
+
+      // HUD
+      ctx.fillStyle="#000";
+      ctx.font="28px Arial Black";
+      ctx.fillText("Score: "+score, 20, 20);
+      ctx.fillText("Best: "+best,  20, 56);
+      ctx.fillText("Orbs: "+collectedBonuses+" / "+TARGET_BONUSES, 20, 92);
+    }
+
+    // ===== Overlay / Reset =====
+    function showOverlay(mode){
+      if (mode === "win") {
+        overlayTitle.textContent = "MISSION COMPLETE";
+        overlayHint.textContent  = "Tap / Click / Press Space to play again";
+      } else {
+        overlayTitle.textContent = "Game Over";
+        overlayHint.textContent  = "Tap / Click / Press Space to restart";
+      }
+      finalScoreEl.textContent=`Score: ${score} — Best: ${best} — Orbs: ${collectedBonuses}/${TARGET_BONUSES}`;
+      overlay.style.display="grid";
+    }
+    function hideOverlay(){overlay.style.display="none";}
+    function reset(){
+      spheres.length=0; bonuses.length=0; explosions.length=0;
+      win=false; winFXActive=false; winRays.length=0;
+      score=0; running=true; collectedBonuses=0;
+      difficultyBoost=0; speeds.spawnMS=800; speeds.bonusMS=3200;
+      player.x=Math.floor(world.w*0.12);
+      player.y=Math.floor(world.h*0.5-player.h/2);
+      hideOverlay();
+    }
+
+    overlay.addEventListener("click",()=>{ if(!winFXActive) reset(); });
+    cvs.addEventListener("click",()=>{ if(!running && !winFXActive) reset(); });
+    window.addEventListener("keydown",e=>{ if((e.code==="Space"||e.code==="Enter") && !running && !winFXActive) reset(); });
+
+    // ===== Main Loop =====
+    function loop(ts){
+      const dt=lastTime?(ts-lastTime):16;
+      lastTime=ts;
+      update(dt,ts);
+      draw(ts);
+      requestAnimationFrame(loop);
+    }
+
+    // Start
+    resize();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
+
