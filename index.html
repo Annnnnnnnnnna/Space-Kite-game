@@ -17,12 +17,12 @@
       display: block;
       width: 100vw;
       height: 100vh;
-      background: url("k.png") center/cover no-repeat;
+      background: url("k.png") center/cover no-repeat; /* space background */
     }
     #overlay {
       position: fixed;
       inset: 0;
-      display: none;            /* grid when visible */
+      display: none;             /* grid when visible */
       place-items: center;
       background: rgba(0,0,0,.45);
       color: #fff;
@@ -60,7 +60,7 @@
   </div>
 
   <script>
-    // -------- Canvas / HiDPI --------
+    // ---------- Canvas / HiDPI ----------
     const cvs = document.getElementById("game");
     const ctx = cvs.getContext("2d");
     const overlay = document.getElementById("overlay");
@@ -71,31 +71,30 @@
       const dpr = Math.max(1, window.devicePixelRatio || 1);
       cvs.width  = Math.floor(window.innerWidth  * dpr);
       cvs.height = Math.floor(window.innerHeight * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);     // draw in CSS pixels
       world.w = window.innerWidth;
       world.h = window.innerHeight;
 
-      // scale player with screen
-      player.w = Math.floor(world.w * 0.08);
+      // Player scales with screen (slightly bigger than before)
+      player.w = Math.floor(world.w * 0.095);
       player.h = player.w;
       if (!started) {
         player.x = Math.floor(world.w * 0.12);
         player.y = Math.floor(world.h * 0.5 - player.h / 2);
       } else {
-        // keep inside screen when rotating device
         player.x = clamp(player.x, 0, world.w - player.w);
         player.y = clamp(player.y, 0, world.h - player.h);
       }
-      speeds.player = Math.max(4, Math.floor(world.w * 0.008));
+      speeds.player = Math.max(4, Math.floor(world.w * 0.009));
     }
     window.addEventListener("resize", resize);
 
-    // -------- Settings --------
-    const HIT_PAD = 10;                        // shrink hitbox a bit (fair collisions)
-    const speeds  = { player: 8, spawnMS: 650, meteorMin: 3, meteorMax: 7 };
-    let difficultyBoost = 0;
+    // ---------- Settings ----------
+    const HIT_PAD = 10;  // shrink player hitbox a bit (fair collisions)
+    const speeds  = { player: 8, spawnMS: 520, meteorMin: 3.8, meteorMax: 9.5 };
+    let difficultyBoost = 0; // increases meteor speed over time
 
-    // -------- Player (p.png) --------
+    // ---------- Player (p.png) ----------
     const playerImg = new Image();
     playerImg.src = "p.png";
     let playerReady = false;
@@ -103,21 +102,36 @@
 
     const player = { x: 0, y: 0, w: 80, h: 80, vx: 0, vy: 0 };
 
-    // -------- Meteors --------
-    const meteors = []; // {x,y,vx,vy,r,spin,a}
+    // ---------- Meteors (s.png) ----------
+    const meteorImg = new Image();
+    meteorImg.src = "s.png";
+    let meteorReady = false;
+    meteorImg.onload = () => meteorReady = true;
+
+    const meteors = []; // {x,y,vx,vy,w,h,angle,spin}
     function rand(min, max) { return Math.random() * (max - min) + min; }
     function clamp(v, min, max) { return v < min ? min : (v > max ? max : v); }
 
     function spawnMeteor() {
-      const r  = rand(world.w * 0.02, world.w * 0.055);
-      const x  = rand(r, world.w - r);
-      const y  = -r - 20;
-      const vy = rand(speeds.meteorMin, speeds.meteorMax) + difficultyBoost;
-      const vx = rand(-1.2, 1.2);
-      meteors.push({ x, y, vx, vy, r, spin: rand(-0.04, 0.04), a: rand(0, Math.PI*2) });
+      // Size scales with screen width
+      const w = rand(world.w * 0.06, world.w * 0.12);
+      const h = w;
+      const x = rand(0, world.w - w);
+      const y = -h - 20;
+
+      // Dynamic fall: some fast ones, some drifting
+      let vy = rand(speeds.meteorMin, speeds.meteorMax) + difficultyBoost;
+      if (Math.random() < 0.18) vy += rand(2, 4.5);      // occasional fast meteor
+      const vx = rand(-1.6, 1.6);
+
+      meteors.push({
+        x, y, vx, vy, w, h,
+        angle: rand(0, Math.PI * 2),
+        spin: rand(-0.06, 0.06)
+      });
     }
 
-    // -------- State --------
+    // ---------- State ----------
     let started = false;
     let running = true;
     let score = 0;
@@ -125,7 +139,7 @@
     let lastSpawn = 0;
     let lastTime = 0;
 
-    // -------- Input --------
+    // ---------- Input ----------
     const keys = new Set();
     window.addEventListener("keydown", e => {
       if (e.code === "Space" && !running) return reset();
@@ -134,6 +148,7 @@
     });
     window.addEventListener("keyup", e => keys.delete(e.code));
 
+    // Touch / drag
     let dragging = false;
     cvs.addEventListener("pointerdown", e => { if (!running) return reset(); dragging = true; moveTo(e); started = true; });
     cvs.addEventListener("pointermove", e => { if (dragging) moveTo(e); });
@@ -148,20 +163,24 @@
       player.y = clamp(y - player.h/2, 0, world.h - player.h);
     }
 
-    // -------- Collisions --------
+    // ---------- Collisions ----------
     function hitbox(o) { return { x: o.x + HIT_PAD, y: o.y + HIT_PAD, w: o.w - HIT_PAD*2, h: o.h - HIT_PAD*2 }; }
     function rectCircleCollide(rect, cx, cy, cr) {
+      // used only for fallback; for image meteors we’ll use AABB overlap
       const tx = clamp(cx, rect.x, rect.x + rect.w);
       const ty = clamp(cy, rect.y, rect.y + rect.h);
       const dx = cx - tx, dy = cy - ty;
       return dx*dx + dy*dy <= cr*cr;
     }
+    function aabbOverlap(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
 
-    // -------- Update / Draw --------
+    // ---------- Update / Draw ----------
     function update(dt, t) {
       if (!running) return;
 
-      // keyboard move
+      // Keyboard movement
       const step = speeds.player;
       if (keys.has("ArrowLeft") || keys.has("KeyA"))  player.x -= step;
       if (keys.has("ArrowRight")|| keys.has("KeyD"))  player.x += step;
@@ -170,30 +189,31 @@
       player.x = clamp(player.x, 0, world.w - player.w);
       player.y = clamp(player.y, 0, world.h - player.h);
 
-      // spawn meteors (faster over time)
+      // Spawn meteors (faster over time)
       if (t - lastSpawn > speeds.spawnMS) {
         lastSpawn = t;
         spawnMeteor();
-        difficultyBoost = Math.min(4, difficultyBoost + 0.02);
-        speeds.spawnMS = Math.max(380, speeds.spawnMS - 2);
+        difficultyBoost = Math.min(6, difficultyBoost + 0.04); // quicker ramp
+        speeds.spawnMS = Math.max(300, speeds.spawnMS - 3);
       }
 
-      // move meteors
+      // Move meteors
       for (const m of meteors) {
         m.x += m.vx;
         m.y += m.vy;
-        m.a += m.spin;
+        m.angle += m.spin;
       }
 
-      // remove off-screen
+      // Remove off-screen
       for (let i = meteors.length - 1; i >= 0; i--) {
-        if (meteors[i].y - meteors[i].r > world.h + 40) meteors.splice(i, 1);
+        if (meteors[i].y - meteors[i].h > world.h + 60) meteors.splice(i, 1);
       }
 
-      // collisions
+      // Collisions (AABB vs player hitbox; generous shrink on player)
       const hb = hitbox(player);
       for (const m of meteors) {
-        if (rectCircleCollide(hb, m.x, m.y, m.r * 0.9)) {
+        const mRect = { x: m.x, y: m.y, w: m.w, h: m.h };
+        if (aabbOverlap(hb, mRect)) {
           running = false;
           best = Math.max(best, score);
           localStorage.setItem("spacekite.best", String(best));
@@ -202,40 +222,31 @@
         }
       }
 
-      // score over time
+      // Score over time
       score += Math.max(1, Math.floor(dt / 16)); // ~+1 per ~frame
-    }
-
-    function polygon(cx, cy, r, n) {
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const ang = (i / n) * Math.PI * 2;
-        const jitter = (i % 2 ? 0.78 : 1.0);
-        const x = cx + Math.cos(ang) * r * jitter;
-        const y = cy + Math.sin(ang) * r * jitter;
-        (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-      }
-      ctx.closePath();
-      ctx.fill();
     }
 
     function draw() {
       ctx.clearRect(0, 0, world.w, world.h);
 
-      // meteors
+      // Meteors (draw image with rotation; fallback to placeholder)
       for (const m of meteors) {
         ctx.save();
-        ctx.translate(m.x, m.y);
-        ctx.rotate(m.a);
-        const g = ctx.createRadialGradient(0, 0, m.r*0.2, 0, 0, m.r);
-        g.addColorStop(0, "rgba(255,255,255,0.15)");
-        g.addColorStop(1, "rgba(0,0,0,0.85)");
-        ctx.fillStyle = g;
-        polygon(0, 0, m.r, 7);
+        ctx.translate(m.x + m.w/2, m.y + m.h/2);
+        ctx.rotate(m.angle);
+        if (meteorReady) {
+          ctx.drawImage(meteorImg, -m.w/2, -m.h/2, m.w, m.h);
+        } else {
+          // fallback placeholder
+          ctx.fillStyle = "rgba(255, 180, 60, 0.85)";
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.min(m.w, m.h)/2, 0, Math.PI*2);
+          ctx.fill();
+        }
         ctx.restore();
       }
 
-      // player (placeholder if image isn't ready)
+      // Player (with placeholder if image isn't ready)
       if (playerReady) {
         ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
       } else {
@@ -256,7 +267,7 @@
       ctx.restore();
     }
 
-    // -------- Overlay / Reset --------
+    // ---------- Overlay / Reset ----------
     function showOverlay() {
       finalScoreEl.textContent = `Score: ${score} — Best: ${best}`;
       overlay.style.display = "grid";
@@ -267,8 +278,7 @@
       score = 0;
       running = true;
       difficultyBoost = 0;
-      speeds.spawnMS = 650;
-      // put player back to the left-center
+      speeds.spawnMS = 520;
       player.x = Math.floor(world.w * 0.12);
       player.y = Math.floor(world.h * 0.5 - player.h / 2);
       hideOverlay();
@@ -278,7 +288,7 @@
     cvs.addEventListener("click", () => { if (!running) reset(); });
     window.addEventListener("keydown", e => { if (e.code === "Space" && !running) reset(); });
 
-    // -------- Main loop --------
+    // ---------- Main loop ----------
     function loop(ts) {
       const dt = lastTime ? (ts - lastTime) : 16;
       lastTime = ts;
