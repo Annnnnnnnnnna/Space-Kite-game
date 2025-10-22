@@ -101,9 +101,15 @@
     const bonuses = [];
     const explosions = [];
 
+    // Win FX
+    let win = false;
+    let winFXActive = false;
+    let winFXStart = 0;
+    const WIN_FX_DURATION = 2200; // ms
+    const winRays = []; // rays for starburst
+
     // ---- State ----
     let running = true;
-    let win = false;
     let score = 0;
     let best = Number(localStorage.getItem("spacekite.best") || 0);
     let collectedBonuses = 0;
@@ -119,7 +125,7 @@
 
     // ---- Spawns ----
     function spawnSphere() {
-      if (spheres.length > 6) return; // fewer meteors on screen
+      if (spheres.length > 6) return; // fewer on screen
       const size = rand(world.w*0.05, world.w*0.09);
       const x = rand(0, world.w - size);
       const y = -size - 20;
@@ -140,13 +146,13 @@
     // ---- Input ----
     const keys = new Set();
     window.addEventListener("keydown", e => {
-      if ((e.code === "Space" || e.code === "Enter") && !running) return reset();
+      if ((e.code === "Space" || e.code === "Enter") && !running && !winFXActive) return reset();
       keys.add(e.code);
     });
     window.addEventListener("keyup", e => keys.delete(e.code));
 
     let dragging = false;
-    cvs.addEventListener("pointerdown", e => { if(!running) return reset(); dragging=true; moveTo(e); });
+    cvs.addEventListener("pointerdown", e => { if(!running && !winFXActive) return reset(); dragging=true; moveTo(e); });
     cvs.addEventListener("pointermove", e => { if(dragging) moveTo(e); });
     cvs.addEventListener("pointerup", ()=>dragging=false);
 
@@ -178,9 +184,78 @@
       }
     }
 
+    // ---- WIN FX ----
+    function startWinFX() {
+      winFXActive = true;
+      winFXStart = performance.now();
+
+      // convert all current spheres to explosions
+      for (const s of spheres) explode(s.x + s.w/2, s.y + s.h/2, "hsl(190,100%,65%)");
+      spheres.length = 0;
+
+      // create starburst rays from player center
+      winRays.length = 0;
+      const cx = player.x + player.w/2;
+      const cy = player.y + player.h/2;
+      const num = 28;
+      for (let i=0;i<num;i++){
+        const ang = (i/num) * Math.PI*2;
+        winRays.push({
+          x: cx, y: cy,
+          angle: ang,
+          len: 0,
+          maxLen: Math.hypot(world.w, world.h), // enough to fill screen
+          speed: rand(1.2, 1.8) * (world.w * 0.01),
+          width: rand(3,6)
+        });
+      }
+    }
+
+    function drawWinFX(now) {
+      const t = now - winFXStart;
+      const cx = player.x + player.w/2;
+      const cy = player.y + player.h/2;
+
+      // radiant portal ring
+      const prog = Math.min(1, t / WIN_FX_DURATION);
+      const R = player.w * (1 + prog * 18);
+      const g = ctx.createRadialGradient(cx, cy, R*0.1, cx, cy, R);
+      g.addColorStop(0, "rgba(0,255,255,0.8)");
+      g.addColorStop(0.35, "rgba(0,180,255,0.35)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI*2); ctx.fill();
+
+      // starburst rays
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = "rgba(0,255,255,0.8)";
+      for (const r of winRays) {
+        r.len = Math.min(r.maxLen, r.len + r.speed);
+        ctx.lineWidth = r.width;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(r.angle)*r.len, cy + Math.sin(r.angle)*r.len);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // pulsating core glow
+      const coreR = player.w * (1.2 + Math.sin(now/120)*0.2);
+      const coreG = ctx.createRadialGradient(cx, cy, coreR*0.1, cx, cy, coreR);
+      coreG.addColorStop(0, "rgba(255,255,255,0.9)");
+      coreG.addColorStop(1, "rgba(0,255,255,0.0)");
+      ctx.fillStyle = coreG;
+      ctx.beginPath(); ctx.arc(cx, cy, coreR, 0, Math.PI*2); ctx.fill();
+    }
+
     // ---- Update ----
     function update(dt,t){
-      if(!running) return;
+      if(!running) {
+        // still advance win FX explosions while FX is active
+        if (winFXActive) updateExplosions();
+        return;
+      }
 
       // Move player
       const step=speeds.player;
@@ -236,6 +311,7 @@
           score+=100;
           collectedBonuses += 1;
           bonuses.splice(i,1);
+          // local explosion & clear enemy field
           explode(player.x+player.w/2,player.y+player.h/2,"hsl(60,100%,70%)");
           for(const s of spheres) explode(s.x+s.w/2,s.y+s.h/2,"hsl(0,100%,60%)");
           spheres.length=0;
@@ -245,10 +321,10 @@
       // Win condition
       if (collectedBonuses >= TARGET_BONUSES && !win) {
         win = true;
-        running = false;
+        running = false;       // pause normal gameplay
         best = Math.max(best, score);
         localStorage.setItem("spacekite.best", String(best));
-        showOverlay("win");
+        startWinFX();          // start portal + starburst
         return;
       }
 
@@ -257,7 +333,7 @@
     }
 
     // ---- Draw ----
-    function draw(){
+    function draw(now){
       ctx.clearRect(0,0,world.w,world.h);
 
       // Spheres (enemies)
@@ -294,6 +370,16 @@
       // Explosions
       drawExplosions();
 
+      // Win FX (portal + rays)
+      if (winFXActive) {
+        drawWinFX(now);
+        // after FX finishes, show overlay mission complete
+        if (now - winFXStart >= WIN_FX_DURATION) {
+          winFXActive = false;
+          showOverlay("win");
+        }
+      }
+
       // HUD
       ctx.fillStyle="#000";
       ctx.font="28px Arial Black";
@@ -317,23 +403,24 @@
     function hideOverlay(){overlay.style.display="none";}
     function reset(){
       spheres.length=0; bonuses.length=0; explosions.length=0;
-      score=0; running=true; win=false; collectedBonuses=0;
+      win=false; winFXActive=false; winRays.length=0;
+      score=0; running=true; collectedBonuses=0;
       difficultyBoost=0; speeds.spawnMS=800; speeds.bonusMS=3200;
       player.x=Math.floor(world.w*0.12);
       player.y=Math.floor(world.h*0.5-player.h/2);
       hideOverlay();
     }
 
-    overlay.addEventListener("click",reset);
-    cvs.addEventListener("click",()=>{if(!running)reset();});
-    window.addEventListener("keydown",e=>{ if((e.code==="Space"||e.code==="Enter") && !running) reset(); });
+    overlay.addEventListener("click",()=>{ if(!winFXActive) reset(); });
+    cvs.addEventListener("click",()=>{ if(!running && !winFXActive) reset(); });
+    window.addEventListener("keydown",e=>{ if((e.code==="Space"||e.code==="Enter") && !running && !winFXActive) reset(); });
 
     // ---- Main loop ----
     function loop(ts){
       const dt=lastTime?(ts-lastTime):16;
       lastTime=ts;
       update(dt,ts);
-      draw();
+      draw(ts);
       requestAnimationFrame(loop);
     }
 
