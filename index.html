@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Space Kite</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      touch-action: none; /* prevent scrolling on touch */
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: url("k.png") center/cover no-repeat;
+    }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: none;            /* grid when visible */
+      place-items: center;
+      background: rgba(0,0,0,.45);
+      color: #fff;
+      text-align: center;
+    }
+    #overlay .card {
+      background: rgba(0,0,0,.55);
+      padding: 16px 22px;
+      border-radius: 12px;
+      min-width: 280px;
+    }
+    #overlay h1 {
+      margin: 0 0 8px 0;
+      font-size: 42px;
+      letter-spacing: .5px;
+    }
+    #overlay .score {
+      font-size: 22px;
+      margin: 4px 0 10px;
+      opacity: .95;
+      font-weight: 700;
+    }
+    #overlay .hint { font-size: 16px; opacity: .9; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="overlay">
+    <div class="card">
+      <h1>Game Over</h1>
+      <div class="score" id="finalScore">Score: 0 — Best: 0</div>
+      <div class="hint">Tap / Click / Press Space to restart</div>
+    </div>
+  </div>
+
+  <script>
+    // -------- Canvas / HiDPI --------
+    const cvs = document.getElementById("game");
+    const ctx = cvs.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const finalScoreEl = document.getElementById("finalScore");
+
+    const world = { w: 0, h: 0 };
+    function resize() {
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      cvs.width  = Math.floor(window.innerWidth  * dpr);
+      cvs.height = Math.floor(window.innerHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
+      world.w = window.innerWidth;
+      world.h = window.innerHeight;
+
+      // scale player with screen
+      player.w = Math.floor(world.w * 0.08);
+      player.h = player.w;
+      if (!started) {
+        player.x = Math.floor(world.w * 0.12);
+        player.y = Math.floor(world.h * 0.5 - player.h / 2);
+      } else {
+        // keep inside screen when rotating device
+        player.x = clamp(player.x, 0, world.w - player.w);
+        player.y = clamp(player.y, 0, world.h - player.h);
+      }
+      speeds.player = Math.max(4, Math.floor(world.w * 0.008));
+    }
+    window.addEventListener("resize", resize);
+
+    // -------- Settings --------
+    const HIT_PAD = 10;                        // shrink hitbox a bit (fair collisions)
+    const speeds  = { player: 8, spawnMS: 650, meteorMin: 3, meteorMax: 7 };
+    let difficultyBoost = 0;
+
+    // -------- Player (p.png) --------
+    const playerImg = new Image();
+    playerImg.src = "p.png";
+    let playerReady = false;
+    playerImg.onload = () => playerReady = true;
+
+    const player = { x: 0, y: 0, w: 80, h: 80, vx: 0, vy: 0 };
+
+    // -------- Meteors --------
+    const meteors = []; // {x,y,vx,vy,r,spin,a}
+    function rand(min, max) { return Math.random() * (max - min) + min; }
+    function clamp(v, min, max) { return v < min ? min : (v > max ? max : v); }
+
+    function spawnMeteor() {
+      const r  = rand(world.w * 0.02, world.w * 0.055);
+      const x  = rand(r, world.w - r);
+      const y  = -r - 20;
+      const vy = rand(speeds.meteorMin, speeds.meteorMax) + difficultyBoost;
+      const vx = rand(-1.2, 1.2);
+      meteors.push({ x, y, vx, vy, r, spin: rand(-0.04, 0.04), a: rand(0, Math.PI*2) });
+    }
+
+    // -------- State --------
+    let started = false;
+    let running = true;
+    let score = 0;
+    let best = Number(localStorage.getItem("spacekite.best") || 0);
+    let lastSpawn = 0;
+    let lastTime = 0;
+
+    // -------- Input --------
+    const keys = new Set();
+    window.addEventListener("keydown", e => {
+      if (e.code === "Space" && !running) return reset();
+      keys.add(e.code);
+      started = true;
+    });
+    window.addEventListener("keyup", e => keys.delete(e.code));
+
+    let dragging = false;
+    cvs.addEventListener("pointerdown", e => { if (!running) return reset(); dragging = true; moveTo(e); started = true; });
+    cvs.addEventListener("pointermove", e => { if (dragging) moveTo(e); });
+    cvs.addEventListener("pointerup",   () => dragging = false);
+    cvs.addEventListener("pointercancel",() => dragging = false);
+
+    function moveTo(e) {
+      const r = cvs.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      const y = e.clientY - r.top;
+      player.x = clamp(x - player.w/2, 0, world.w - player.w);
+      player.y = clamp(y - player.h/2, 0, world.h - player.h);
+    }
+
+    // -------- Collisions --------
+    function hitbox(o) { return { x: o.x + HIT_PAD, y: o.y + HIT_PAD, w: o.w - HIT_PAD*2, h: o.h - HIT_PAD*2 }; }
+    function rectCircleCollide(rect, cx, cy, cr) {
+      const tx = clamp(cx, rect.x, rect.x + rect.w);
+      const ty = clamp(cy, rect.y, rect.y + rect.h);
+      const dx = cx - tx, dy = cy - ty;
+      return dx*dx + dy*dy <= cr*cr;
+    }
+
+    // -------- Update / Draw --------
+    function update(dt, t) {
+      if (!running) return;
+
+      // keyboard move
+      const step = speeds.player;
+      if (keys.has("ArrowLeft") || keys.has("KeyA"))  player.x -= step;
+      if (keys.has("ArrowRight")|| keys.has("KeyD"))  player.x += step;
+      if (keys.has("ArrowUp")   || keys.has("KeyW"))  player.y -= step;
+      if (keys.has("ArrowDown") || keys.has("KeyS"))  player.y += step;
+      player.x = clamp(player.x, 0, world.w - player.w);
+      player.y = clamp(player.y, 0, world.h - player.h);
+
+      // spawn meteors (faster over time)
+      if (t - lastSpawn > speeds.spawnMS) {
+        lastSpawn = t;
+        spawnMeteor();
+        difficultyBoost = Math.min(4, difficultyBoost + 0.02);
+        speeds.spawnMS = Math.max(380, speeds.spawnMS - 2);
+      }
+
+      // move meteors
+      for (const m of meteors) {
+        m.x += m.vx;
+        m.y += m.vy;
+        m.a += m.spin;
+      }
+
+      // remove off-screen
+      for (let i = meteors.length - 1; i >= 0; i--) {
+        if (meteors[i].y - meteors[i].r > world.h + 40) meteors.splice(i, 1);
+      }
+
+      // collisions
+      const hb = hitbox(player);
+      for (const m of meteors) {
+        if (rectCircleCollide(hb, m.x, m.y, m.r * 0.9)) {
+          running = false;
+          best = Math.max(best, score);
+          localStorage.setItem("spacekite.best", String(best));
+          showOverlay();
+          break;
+        }
+      }
+
+      // score over time
+      score += Math.max(1, Math.floor(dt / 16)); // ~+1 per ~frame
+    }
+
+    function polygon(cx, cy, r, n) {
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const ang = (i / n) * Math.PI * 2;
+        const jitter = (i % 2 ? 0.78 : 1.0);
+        const x = cx + Math.cos(ang) * r * jitter;
+        const y = cy + Math.sin(ang) * r * jitter;
+        (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, world.w, world.h);
+
+      // meteors
+      for (const m of meteors) {
+        ctx.save();
+        ctx.translate(m.x, m.y);
+        ctx.rotate(m.a);
+        const g = ctx.createRadialGradient(0, 0, m.r*0.2, 0, 0, m.r);
+        g.addColorStop(0, "rgba(255,255,255,0.15)");
+        g.addColorStop(1, "rgba(0,0,0,0.85)");
+        ctx.fillStyle = g;
+        polygon(0, 0, m.r, 7);
+        ctx.restore();
+      }
+
+      // player (placeholder if image isn't ready)
+      if (playerReady) {
+        ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+      } else {
+        ctx.fillStyle = "rgba(255,0,128,0.6)";
+        ctx.fillRect(player.x, player.y, player.w, player.h);
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(player.x, player.y, player.w, player.h);
+      }
+
+      // HUD
+      ctx.save();
+      ctx.fillStyle = "#000";
+      ctx.font = "28px Arial Black";
+      ctx.textBaseline = "top";
+      ctx.fillText("Score: " + score, 20, 20);
+      ctx.fillText("Best: " + best, 20, 56);
+      ctx.restore();
+    }
+
+    // -------- Overlay / Reset --------
+    function showOverlay() {
+      finalScoreEl.textContent = `Score: ${score} — Best: ${best}`;
+      overlay.style.display = "grid";
+    }
+    function hideOverlay() { overlay.style.display = "none"; }
+    function reset() {
+      meteors.length = 0;
+      score = 0;
+      running = true;
+      difficultyBoost = 0;
+      speeds.spawnMS = 650;
+      // put player back to the left-center
+      player.x = Math.floor(world.w * 0.12);
+      player.y = Math.floor(world.h * 0.5 - player.h / 2);
+      hideOverlay();
+    }
+
+    overlay.addEventListener("click", reset);
+    cvs.addEventListener("click", () => { if (!running) reset(); });
+    window.addEventListener("keydown", e => { if (e.code === "Space" && !running) reset(); });
+
+    // -------- Main loop --------
+    function loop(ts) {
+      const dt = lastTime ? (ts - lastTime) : 16;
+      lastTime = ts;
+      update(dt, ts);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // Start
+    resize();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
+
