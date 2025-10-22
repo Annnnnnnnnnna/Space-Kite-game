@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -34,7 +35,7 @@
       border-radius: 12px;
       min-width: 280px;
     }
-    #overlay h1 { margin: 0 0 8px 0; font-size: 42px; letter-spacing: .3px; }
+    #overlay h1 { margin: 0 0 8px 0; font-size: 42px; }
     #overlay .score { font-size: 22px; margin: 6px 0 10px; font-weight: 700; }
     #overlay .hint  { font-size: 16px; opacity: .9; }
   </style>
@@ -51,7 +52,6 @@
   </div>
 
   <script>
-    // ---------- Canvas ----------
     const cvs = document.getElementById("game");
     const ctx = cvs.getContext("2d");
     const overlay = document.getElementById("overlay");
@@ -73,12 +73,10 @@
     }
     window.addEventListener("resize", resize);
 
-    // ---------- Settings ----------
     const HIT_PAD = 10;
-    const speeds  = { player: 8, spawnMS: 500, bonusMS: 3000, minSpawnMS: 260 };
+    const speeds  = { player: 8, spawnMS: 800, bonusMS: 3200, minSpawnMS: 400 }; // slower spawn
     let difficultyBoost = 0;
 
-    // ---------- Images ----------
     const playerImg = new Image(); playerImg.src = "p.png";
     let playerReady = false; playerImg.onload = () => playerReady = true;
 
@@ -92,7 +90,6 @@
     const bonusImg = new Image(); bonusImg.src = "r.png";
     let bonusReady = false; bonusImg.onload = () => bonusReady = true;
 
-    // ---------- Entities ----------
     const player = { x: 0, y: 0, w: 80, h: 80 };
     const spheres = [];
     const bonuses = [];
@@ -106,32 +103,30 @@
     let lastBonusSpawn = 0;
     let lastTime = 0;
 
-    // ---------- Helpers ----------
     const rand = (a,b) => Math.random()*(b-a)+a;
     const clamp = (v,a,b) => v<a?a:v>b?b:v;
     const aabb = (A,B) => A.x<B.x+B.w && A.x+A.w>B.x && A.y<B.y+B.h && A.y+A.h>B.y;
     const hitbox = o => ({x:o.x+HIT_PAD,y:o.y+HIT_PAD,w:o.w-HIT_PAD*2,h:o.h-HIT_PAD*2});
 
-    // ---------- Spawn ----------
     function spawnSphere() {
-      const size = rand(world.w*0.05, world.w*0.09); // smaller spheres
+      if (spheres.length > 6) return; // fewer meteors on screen
+      const size = rand(world.w*0.05, world.w*0.09);
       const x = rand(0, world.w - size);
       const y = -size - 20;
-      const vy = rand(4.5, 9.5) + difficultyBoost;
-      const vx = rand(-3,3);
+      const vy = rand(7, 13) + difficultyBoost; // faster meteors
+      const vx = rand(-2.5, 2.5);
       const img = sphereImgs[(Math.random()*sphereImgs.length)|0];
-      spheres.push({x,y,w:size,h:size,vx,vy,angle:rand(0,Math.PI*2),spin:rand(-0.08,0.08),img});
+      spheres.push({x,y,w:size,h:size,vx,vy,angle:rand(0,Math.PI*2),spin:rand(-0.1,0.1),img});
     }
 
     function spawnBonus() {
       const size = Math.max(36, Math.floor(world.w * 0.06));
       const x = rand(0, world.w - size);
       const y = -size - 20;
-      const vy = rand(2.5, 4.0);
+      const vy = rand(3, 4.5);
       bonuses.push({x,y,w:size,h:size,vy,angle:rand(0,Math.PI*2),spin:rand(-0.05,0.05)});
     }
 
-    // ---------- Input ----------
     const keys = new Set();
     window.addEventListener("keydown", e => {
       if (e.code==="Space" && !running) return reset();
@@ -153,10 +148,9 @@
       player.y=clamp(y-player.h/2,0,world.h-player.h);
     }
 
-    // ---------- Explosion Effect ----------
     function explode(x,y,color="hsl(200,100%,70%)") {
-      for(let i=0;i<30;i++){
-        explosions.push({x,y,vx:rand(-4,4),vy:rand(-4,4),r:rand(2,6),life:rand(30,70),color});
+      for(let i=0;i<25;i++){
+        explosions.push({x,y,vx:rand(-4,4),vy:rand(-4,4),r:rand(2,6),life:rand(25,60),color});
       }
     }
     function updateExplosions(){
@@ -173,7 +167,6 @@
       }
     }
 
-    // ---------- Update ----------
     function update(dt,t){
       if(!running) return;
       const step=speeds.player;
@@ -187,17 +180,17 @@
       if(t-lastSpawn>speeds.spawnMS){
         lastSpawn=t;
         spawnSphere();
-        difficultyBoost=Math.min(10,difficultyBoost+0.08);
-        speeds.spawnMS=Math.max(speeds.minSpawnMS,speeds.spawnMS-4);
+        difficultyBoost=Math.min(10,difficultyBoost+0.1);
+        speeds.spawnMS=Math.max(speeds.minSpawnMS,speeds.spawnMS-2);
       }
 
       if(t-lastBonusSpawn>speeds.bonusMS){
         lastBonusSpawn=t;
-        if(Math.random()<0.6) spawnBonus();
-        speeds.bonusMS=Math.max(1600,speeds.bonusMS-40);
+        if(Math.random()<0.5) spawnBonus();
+        speeds.bonusMS=Math.max(1800,speeds.bonusMS-40);
       }
 
-      for(const s of spheres){s.x+=s.vx; s.y+=s.vy; s.angle+=s.spin*1.2;}
+      for(const s of spheres){s.x+=s.vx; s.y+=s.vy; s.angle+=s.spin;}
       for(const b of bonuses){b.y+=b.vy; b.angle+=b.spin;}
       for(let i=spheres.length-1;i>=0;i--) if(spheres[i].y>world.h+60) spheres.splice(i,1);
       for(let i=bonuses.length-1;i>=0;i--) if(bonuses[i].y>world.h+60) bonuses.splice(i,1);
@@ -214,7 +207,7 @@
         }
       }
 
-      // Bonus effect — DESTROYS all meteors
+      // Bonus destroys all meteors
       for(let i=bonuses.length-1;i>=0;i--){
         const b=bonuses[i];
         if(aabb(hb,b)){
@@ -222,7 +215,7 @@
           bonuses.splice(i,1);
           explode(player.x+player.w/2,player.y+player.h/2,"hsl(60,100%,70%)");
           for(const s of spheres) explode(s.x+s.w/2,s.y+s.h/2,"hsl(0,100%,60%)");
-          spheres.length=0; // clear all meteors
+          spheres.length=0;
         }
       }
 
@@ -230,13 +223,10 @@
       score+=Math.max(1,Math.floor(dt/16));
     }
 
-    // ---------- Draw ----------
     function draw(){
       ctx.clearRect(0,0,world.w,world.h);
-
       for(const s of spheres){
-        const pulse=1+Math.sin(performance.now()/220+s.x*0.02)*0.02;
-        const w=s.w*pulse,h=s.h*pulse;
+        const w=s.w,h=s.h;
         ctx.save();
         ctx.translate(s.x+s.w/2,s.y+s.h/2);
         ctx.rotate(s.angle);
@@ -253,7 +243,6 @@
         ctx.restore();
       }
 
-      // Player glow
       const cx=player.x+player.w/2,cy=player.y+player.h/2;
       const glow=ctx.createRadialGradient(cx,cy,player.w*0.25,cx,cy,player.w*1.0);
       glow.addColorStop(0,"rgba(0,255,255,0.45)");
@@ -261,8 +250,6 @@
       ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(cx,cy,player.w,0,Math.PI*2); ctx.fill();
 
       if(playerReady) ctx.drawImage(playerImg,player.x,player.y,player.w,player.h);
-      else {ctx.fillStyle="rgba(255,0,128,0.6)"; ctx.fillRect(player.x,player.y,player.w,player.h);}
-
       drawExplosions();
 
       ctx.fillStyle="#000";
@@ -271,7 +258,6 @@
       ctx.fillText("Best: "+best,20,56);
     }
 
-    // ---------- Overlay / Reset ----------
     function showOverlay(){
       finalScoreEl.textContent=`Score: ${score} — Best: ${best}`;
       overlay.style.display="grid";
@@ -280,7 +266,7 @@
     function reset(){
       spheres.length=0; bonuses.length=0; explosions.length=0;
       score=0; running=true; difficultyBoost=0;
-      speeds.spawnMS=500; speeds.bonusMS=3000;
+      speeds.spawnMS=800; speeds.bonusMS=3200;
       player.x=Math.floor(world.w*0.12);
       player.y=Math.floor(world.h*0.5-player.h/2);
       hideOverlay();
